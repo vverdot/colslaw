@@ -3,14 +3,32 @@
 use strict;
 use warnings;
 
+use Getopt::Long qw(:config no_ignore_case no_auto_abbrev bundling);
+use Tie::File;
+
+=pod
+    TODO:
+    - browse command (interactive display)
+    - reset command
+    - detect variants / switch between them
+    -? favorites
+    - warning on useless themes / invalid ones
+    - option to write in xresources / install theme
+    -? option to test for color support (term + env + xresources)
+=cut
+
 # Setup some gobal vars
 my $homeDir = $ENV{'HOME'};
 
 my $colslawDir =  $ENV{'COLSLAW_HOME'};
-if (not defined $colslawDir) { $colslawDir = $homeDir . '/.colslaw' }
+(defined $colslawDir) or $colslawDir = $homeDir . '/.colslaw';
+
+my $configFile = $colslawDir . '/config';
+my %config = ();
+load_config() or warn "Failed to load config file $configFile\n";
 
 my $themesDir = $ENV{'COLSLAW_THEMES'};
-if (not defined $themesDir) { $themesDir = $colslawDir . '/themes' }
+(defined $themesDir) or $themesDir = defined $config{"themesPath"} ? $config{"themesPath"} : $colslawDir . '/themes';
 
 # REF: http://pod.tst.eu/http://cvs.schmorp.de/rxvt-unicode/doc/rxvt.7.pod#XTerm_Operating_System_Commands
 # what about cursorColor, pointerColor, throughColor, underlineColor ?
@@ -18,7 +36,7 @@ my %OSC_CODES = (
    "foreground" => '10',
    "background" => '11',
    "cursorColor" => '12',
-   "!mouse_backgroun" => '13',
+   "!mouse_background" => '13',
    "!highlightColor" => '17',
    "!highlightTextColor" => '19',
    "colorIT" => '704',
@@ -35,14 +53,67 @@ my %resources;
 my @unknown;
 my $status;
 
-my $verbose = 1;
+# CLI Options
+
+my $opt_verbose = 0;
+my $opt_dryrun  = 0;
 
 # Call Main if called directly
 # Let distinguish between direct execution
 #+ and urxvt extension.
 unless (caller) {
+
+    GetOptions(
+        'verbose|v' => \$opt_verbose,
+        'dry-run|n' => \$opt_dryrun
+    ) or die("Check script usage with --help.\n");
+
     Main( @ARGV );
     exit;
+}
+
+sub load_config {
+    open(FH, '<', $configFile) or return 0;
+   
+    while(<FH>){
+        chomp;                  # no newline
+        s/^#.*//;               # no comments
+        s/^\s+//;               # no leading white
+        s/\s+$//;               # no trailing white
+        next unless length;     # anything left?
+
+        # parse configuration
+        # https://regex101.com/r/6PvVoT/2
+        if ( $_ =~ m/^(\S+)\s*=\s*(".+"|\S+)$/ ) {
+            #print "[CONFIG] $1 => $2\n";
+            $config{$1} = $2;
+            next;
+        }
+    } 
+    
+    close(FH);
+
+    return 1;
+}
+
+sub write_config {
+    
+    my ($name, $value) = @_;
+    my $found = 0;
+
+    tie my @configs, 'Tie::File', $configFile or return 0;
+    
+    for (@configs) {
+        if ( $_ =~ m/^$name\s*=\s*\S+/ ) {
+            $_ = "$name=$value";
+            $found = 1;
+            last;
+        }
+    }
+
+    push @configs, "$name=$value" unless $found;
+
+    untie @configs;
 }
 
 #######################
@@ -124,16 +195,19 @@ sub load_colorscheme {
 }
 
 sub load_file {
-    my ($filename, $dryrun) = @_;
-
+    my ($filename) = @_;
+    
     # Clear collected resources
     reset_resources();
-
+    
     my %definitions;
 
-    open(FH, '<', $filename) or die $!;
-   
-    while(<FH>){
+    open(my $FH, '<', $filename) or die "$! $filename\n";
+  
+    # leaning Perl the hard way :p
+    # $_ not localized in while loops...
+    # http://www.perlmonks.org/?node=65287%20 
+    while(local $_ = <$FH>){
 
         # basic cleanup
         chomp;                  # no newline
@@ -163,12 +237,12 @@ sub load_file {
         }
     }
 
-    close(FH);  
+    close($FH);  
     #print "$_ $defines{$_}\n" for (keys %defines);
    
     fix_colorscheme();
 
-    if ($verbose) {
+    if ($opt_verbose) {
         print "$filename: [$status] \n";
         if ( @unknown ) {
             foreach( @unknown ) {
@@ -177,7 +251,7 @@ sub load_file {
         }
     }
 
-    load_colorscheme() unless $dryrun;
+    load_colorscheme() unless $opt_dryrun;
 
 }
 
@@ -229,45 +303,57 @@ sub fix_colorscheme {
             $status .= '+';
         }
     }
-
-
 }
+
+sub save_theme {
+    my ($theme_name) = @_;
+    write_config("defaultTheme", $theme_name);   
+}
+
+sub cmd_set {
+
+    my ($theme_name) = @_;
+
+    defined $theme_name or $theme_name = $config{"defaultTheme"};
+
+    if (defined $theme_name) {
+        reset_resources();
+        load_file(theme_file($theme_name));
+        save_theme($theme_name) unless $opt_dryrun;
+    } else { die "Theme name missing, check usage with --help\n" }
+}
+
+sub cmd_list {
+
+    # Force dry-run mode
+    $opt_dryrun = 1;
+
+    my @themes = list_themes();
+
+    if ($opt_verbose) {
+        # Disable verbose to manually control it
+        $opt_verbose = 0;
+        foreach (@themes) {
+            chomp;
+            load_file($_);
+            print theme_name($_) . " [$status] \n";
+        }
+    } else {
+        foreach (@themes) { print theme_name($_) . "\n" }
+    }
+}
+
 
 # Main
 sub Main {
-    reset_resources();
 
-=pod
-    my ($theme_sel) = @_;
-    
-    my @themes = list_themes();
-    
-    if (defined $theme_sel) {
-        print "Selected theme #$theme_sel\n";
-    } else {
-        my $idx = 0;
-        foreach (@themes) {
-            print ++$idx . ". " . theme_name($_);
-        }
-    }
-=cut
-    
-    my ($theme_sel) = @_;
-    
-    if (defined $theme_sel) {
-        load_file(theme_file($theme_sel));
-    } else {
-        my @themes = list_themes();
-        #foreach (@themes) { print theme_name($_) . "\n" }
-        foreach (@themes) {
-            chomp;
-            #print "$_ \n";
-            load_file($_, 1);
-        }
-    }
+    # Parse the command
+    my $command = shift || 'list';
+   
+    if      ( $command =~ m/^(list|ls)$/ )      { cmd_list(@_) }
+    elsif   ( $command =~ m/^(set|apply)$/ )    { cmd_set(@_) }
+    else    { die "Unknown command \"$command\", check usage with --help\n" }
 
-    #print "\n";
-    #load_file(theme_file("Ollie"));
-    
-    #load_file(theme_file("base16-greenscreen.Xresources"));
+    exit;
+
 }
