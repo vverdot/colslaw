@@ -8,8 +8,6 @@ use Tie::File;
 
 =pod
     TODO:
-    - browse command (interactive display)
-    - reset command
     - detect variants / switch between them
     -? favorites
     - warning on useless themes / invalid ones
@@ -101,6 +99,9 @@ sub write_config {
     my ($name, $value) = @_;
     my $found = 0;
 
+    # Update cache too
+    $config{$name} = $value;
+
     tie my @configs, 'Tie::File', $configFile or return 0;
     
     for (@configs) {
@@ -162,7 +163,7 @@ sub osc_color_cmd {
 # Return the list of installed themes
 sub list_themes {
     #my @value = qx{find $themesDir -type f,l | sed 's|^$themesDir/||'};
-    my @value = qx{find $themesDir -type f,l};
+    my @value = qx{find -L $themesDir -type f,l};
     return @value;
 }
 
@@ -310,11 +311,29 @@ sub save_theme {
     write_config("defaultTheme", $theme_name);   
 }
 
+sub cmd_reset {
+
+    my $theme_name = $config{"defaultTheme"};
+
+    if (defined $theme_name) {
+        reset_resources();
+        load_file(theme_file($theme_name));
+    } else { die "Cannot reset, no defaultTheme in config file.\n" }
+}
+
+sub cmd_load {
+    my ($theme_name) = @_;
+
+    if (defined $theme_name) {
+        reset_resources();
+        load_file(theme_file($theme_name));
+    } else { die "Theme name missing, check usage with --help\n" }
+
+}
+
 sub cmd_set {
 
     my ($theme_name) = @_;
-
-    defined $theme_name or $theme_name = $config{"defaultTheme"};
 
     if (defined $theme_name) {
         reset_resources();
@@ -343,6 +362,65 @@ sub cmd_list {
     }
 }
 
+sub cmd_show {
+    my @themes = list_themes();
+
+    # TODO: Fast forward (idx) to current theme
+    my $idx = 0;
+    my $nb_themes = scalar @themes;
+    my $selected = 0;
+
+    # Forced options
+    $opt_verbose = 0;
+    $opt_dryrun = 0;
+
+    # Set default
+    my $default = $config{"defaultTheme"};
+    
+    print " # Themes Showcase #";
+    print "  ( j: previous ; k: next ; t: select ; q: quit )\n";
+   
+    while (1) {
+        my $filename = $themes[$idx];
+        chomp $filename;
+        my $theme_name = theme_name($filename);
+
+        my $default_flag = (defined $default and $default eq $theme_name) ? "*" : " ";
+        print "\33[2K\r [" . ($idx+1) . "/$nb_themes]$default_flag$theme_name";
+        
+        # Preview theme
+        reset_resources();
+        load_file($filename);
+
+        system("stty raw -echo");
+        my $key_code = ord getc(STDIN);
+        system("stty cooked echo");
+
+        if ($key_code == 27 or $key_code == 113) { # ESC or 'q' keys
+            print "\n";
+            last;
+        } elsif ($key_code == 106) {
+            $idx--;
+        } elsif ($key_code == 107) {
+            $idx++;
+        } elsif ($key_code == 116) {
+            save_theme(theme_name($filename));
+            print "\33[2K\r [" . ($idx+1) . "/$nb_themes]*" . $theme_name;
+            print "\n";
+            $selected = 1;
+            last;
+        } else { next }
+
+        # Fix index
+        if ($idx == -1) {
+           $idx = $nb_themes - 1;
+        } elsif ($idx == scalar $nb_themes) {
+            $idx = 0;
+        }
+    }
+
+    cmd_reset() unless $selected;
+}
 
 # Main
 sub Main {
@@ -352,6 +430,9 @@ sub Main {
    
     if      ( $command =~ m/^(list|ls)$/ )      { cmd_list(@_) }
     elsif   ( $command =~ m/^(set|apply)$/ )    { cmd_set(@_) }
+    elsif   ( $command =~ m/^(load|preview)$/ ) { cmd_load(@_) }
+    elsif   ( $command =~ m/^(showcase|show)$/ ){ cmd_show() }
+    elsif   ( $command =~ m/^reset$/ )          { cmd_reset() }
     else    { die "Unknown command \"$command\", check usage with --help\n" }
 
     exit;
