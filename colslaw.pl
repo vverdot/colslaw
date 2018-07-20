@@ -1,6 +1,8 @@
 #!/usr/bin/perl
 
-use strict;
+# Disabled strict to have colslaw working as standalone script
+# + and urxvt extension at the same time. (FIX welcome)
+#use strict;
 use warnings;
 
 use Getopt::Long qw(:config no_ignore_case no_auto_abbrev bundling);
